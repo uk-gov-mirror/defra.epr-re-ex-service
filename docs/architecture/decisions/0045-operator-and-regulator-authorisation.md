@@ -77,11 +77,52 @@ There are no carve-outs. A regulator may read anything an operator may read, for
 
 The operator path is unchanged by this ADR. The organisation-link check, the linked scopes and the conditions on them stay exactly as they are. The regulator grant is a new branch alongside them.
 
-### 4. Two families of scope
+### 4. A scope names an entity and an operation, never a population
 
-**Shared scopes** are the same permission held by both populations on different conditions — `organisation.read` above. They gate the operator pages a regulator reads.
+`organisation.read` and `organisation.linked.write` name what the holder acts on. `admin.read`, `admin.write` and `regulator` name the holder instead. The difference decides whether a second population can be given the same permission.
 
-**Regulator-only scopes** gate what only a regulator does. Today there is one, and it is coarse: it stands for the whole set of regulator functions. It subdivides as caseworking functions arrive, at which point a route names the member it needs.
+Both role-named scopes have reached that point. A regulator needs most of what `admin.read` covers — the organisation list, the summary-log list and file, the market reports, the data extracts — and must be refused the rest of it, because system logs, form submissions and linked organisations carry personal data (PAE-1077). One flat scope cannot express that. Meanwhile `regulator` gates nothing: no route requires it, and every regulator read reaches its route through `organisation.read`.
+
+So the service has one scope vocabulary, drawn on entities and operations, and every role is a bundle over it.
+
+Five operation classes separate permissions in this domain. Each is a different act, not the same act on a different noun:
+
+| Class                 | What sets it apart                                       |
+| --------------------- | -------------------------------------------------------- |
+| read in context       | the caller already holds the organisation id             |
+| search across         | enumerates the population; the caller holds no id yet    |
+| download the artefact | the operator's original upload, not the parsed model     |
+| bulk extract          | the dataset leaves the service at scale                  |
+| aggregate             | no single operator is identifiable; publication-destined |
+
+A finer split fails the test that earns these five. No one holds "read the registration" without "read the accreditation", so those are one scope.
+
+The read vocabulary:
+
+| Scope                   | Covers                                                                                                                                    |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `organisation.read`     | the operator record in context — organisation, registrations, accreditations, PRNs, summary logs, waste balances, reports, overseas sites |
+| `organisation.search`   | enumeration across operators — the organisation list, the report submissions list, the PRN lists                                          |
+| `summary-log.file.read` | the uploaded spreadsheet, as the operator submitted it                                                                                    |
+| `market-data.read`      | public register, tonnage monitoring, PRN tonnage, waste-balance availability                                                              |
+| `data-extract.read`     | the waste-record, summary-log and market-insight extracts                                                                                 |
+| `service-data.read`     | system logs, form submissions, linked organisations, the dead-letter queue                                                                |
+
+`organisation.read` and its linked and write siblings exist today. This ADR names the other five. `admin.read` is their union, so it stops existing when they land, and `regulator` stops existing with it.
+
+Writes keep their present shape. No regulator-initiated write exists: a service administrator performs each regulator decision, for registration and accreditation status transitions (PAE-1598) and for PRN cancellation (PAE-1807). This ADR names no regulator write scope, because a scope named before its capability invents a requirement.
+
+Every role is a bundle. No role loses access it holds today: the four read scopes that replace `admin.read` are granted together to every tier that holds `admin.read` now, and the regulator bundle is the subset that carries no personal data.
+
+| Role                     | Scopes                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| operator                 | `organisation.read`, `organisation.write` — both on the link condition — and `organisation.linked.read` / `.write` |
+| regulator_standard       | `organisation.read`, `organisation.search`, `summary-log.file.read`, `market-data.read`, `data-extract.read`       |
+| support                  | the regulator bundle and `service-data.read`                                                                       |
+| service_maintainer       | the support bundle and `admin.dlq.purge`                                                                           |
+| service_maintainer_write | the maintainer bundle and `admin.write`                                                                            |
+
+A route declares a scope from the vocabulary. It never names a bundle. A regulator persona that arrives later — the caseworker, the analyst, the field auditor that PAE-1728 must still decide between — is a new row in this table, and changes no route.
 
 ### 5. An identity matching more than one rule receives the union
 
@@ -123,15 +164,20 @@ An Entra session therefore presents its access token to the backend. A Defra ID 
 - Regulators are refused writes by absence rather than by a list. Nothing enumerates what a regulator may not do, so nothing can be forgotten from that enumeration.
 - Adding a regulator role later is a security-group assignment and a map entry. No route or template changes.
 - Both frontends resolve permissions the same way, so a reader learns one pattern.
+- A regulator reads the summary-log file, the organisation list and the data extracts without reading the personal data that sits beside them in `admin.read` today.
+- Market data can be granted on its own, so a reader who needs the published aggregates never receives an operator record.
 
 ### Costs
 
 - A new backend endpoint, and a round trip at sign-in and on each refresh.
 - The regulator grant is invisible at the route. A reader of a route declaration cannot tell that regulators reach it; only the resolver says so. This is the price of the drift being unrepresentable, and it needs a comment where the resolver grants it.
+- Every route that carries `admin.read` is re-declared against the scope its data belongs to. The change is mechanical, and it touches the routes the admin frontend and the regulator frontend share.
+- `summary-log.file.read` is a strict escalation of `organisation.read`: a holder of the file scope can already read the parsed data. It earns a separate scope only where a reader gets the data and not the artefact.
 
 ### Not solved
 
 - **Jurisdiction.** A regulator sees every organisation, not only those their authority regulates. Narrowing would be a grant condition on `organisation.read`, the same shape as the operator's link check, but it is not designed here.
-- **The regulator role taxonomy.** One flat role exists. This ADR describes how a second would be added, and adds none.
+- **The regulator role taxonomy.** One flat role exists. This ADR describes how a second would be added, and adds none. PAE-1728 must first decide how many regulator personas the service serves.
+- **Regulator writes.** Registration and accreditation status transitions, PRN cancellation, and overseas-site maintenance are the three functions that need a regulator write scope. Each has a different blast radius, so each takes its own scope. None is designed here, because a service administrator performs all three today.
 - **Two role strings.** `EPR.Regulator` and `Waste.Regulator.Standard` both exist and mean different things to different consumers. Neither is named canonical here.
 - **Service-maintainer assignment.** Maintainer tiers still come from email lists in configuration rather than from Entra groups. ADR 0033 named group-based assignment as a future concern and it remains one.
