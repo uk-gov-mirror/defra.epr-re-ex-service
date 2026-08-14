@@ -30,9 +30,11 @@ The PoC that established regulator sign-in (PAE-1771) closed with an explicit re
 
 A **role** says who a user is. **Scopes** say what they may do. A role is a named bundle of scopes, and a route declares the scopes it needs, never a role. This separation was established in the admin frontend by ADR 0033, and applied to the backend auth layer by the clean-up under PAE-1556 and PAE-1661, which removed the conflation of the two and named the operator-side permissions for what they are.
 
+An **app role** is a third thing, and belongs to Entra rather than to this service. It is an assignment in the identity provider, and it is an input to resolution, never a role in this vocabulary.
+
 ### What was inconsistent
 
-The two frontends resolved permissions by different means. The admin frontend asked the backend once at sign-in, through `GET /v1/admin/me`, and stored the answer on the session — the pattern ADR 0016 named as its target and ADR 0033 adopted. `epr-frontend` instead read the Entra `roles` claim itself, inside its Bell profile function, and minted its own session scope. The mapping from identity to permission therefore lived in two codebases, and they drifted: the frontend rendered operator read routes for a regulator that the backend refused.
+The two frontends resolved permissions by different means. The admin frontend asked the backend once at sign-in, through `GET /v1/admin/me`, and stored the answer on the session — the pattern ADR 0016 named as its target and ADR 0033 adopted. `epr-frontend` instead read the Entra app roles itself, inside its Bell profile function, and minted its own session scope. The mapping from identity to permission therefore lived in two codebases, and they drifted: the frontend rendered operator read routes for a regulator that the backend refused.
 
 ## Decision
 
@@ -53,7 +55,7 @@ Resolution has two halves, and separating them is what makes it safe for a front
 
 **Durable resolution** runs at sign-in and again on token refresh. It answers "who is this, permanently?" from the identity alone:
 
-- an Entra `roles` claim carrying a regulator application role resolves to the regulator role
+- an Entra identity carrying the regulator app role resolves to the regulator role
 - an Entra `preferred_username` on a service-maintainer email list resolves to that tier
 - a Defra ID identity resolves to the operator role
 
@@ -130,28 +132,28 @@ A route declares a scope from the vocabulary. It never names a bundle. A regulat
 
 ### 5. An identity matching more than one rule receives the union, and keeps every role it matched
 
-An Entra identity holding a regulator application role and also sitting on a service-maintainer email list receives both bundles. There is no ordering and no short-circuit.
+An Entra identity holding the regulator app role and also sitting on a service-maintainer email list receives both bundles. There is no ordering and no short-circuit.
 
 The alternative — first match wins — makes an Entra role assignment silently destructive. Granting a service maintainer a regulator role would remove their admin access, with no change in any repository, no deployment, and no signal but a `403`.
 
 A session therefore carries `roles`, a set. No single label serves both frontends, because the same identity is a regulator in `epr-frontend` and a service maintainer in the admin frontend.
 
-**Each frontend chooses its shell from the roles it serves.** An application holds an ordered list of the roles it renders, and takes the first one the session holds. Neither application ranks a role it does not render, so the two lists never have to agree.
+**Each frontend chooses its shell from the roles it serves.** A frontend holds an ordered list of the roles it renders, and takes the first one the session holds. Neither frontend ranks a role it does not render, so the two lists never have to agree.
 
 ### 6. A session carries a positive identity
 
 An identity that resolves to no role gets `{ roles: [], scopes: [] }`, and the frontend renders the not-authorised page. It does not mint a session usable on operator routes.
 
-An identity that resolves to roles, but to none the application serves, is refused the same way. An application refuses on the same list it chooses its shell from, so every session it admits has a shell to render.
+An identity that resolves to roles, but to none the frontend serves, is refused the same way. A frontend refuses on the same list it chooses its shell from, so every session it admits has a shell to render.
 
-This closes a class of defect rather than an instance. Where the absence of a scope is a tolerated state, a guard written against a specific scope does not fire, and the session falls through to whatever the default is. Every session an application admits belongs to a population that application serves, decided at sign-in.
+This closes a class of defect rather than an instance. Where the absence of a scope is a tolerated state, a guard written against a specific scope does not fire, and the session falls through to whatever the default is. Every session a frontend admits belongs to a population that frontend serves, decided at sign-in.
 
 ### 7. Frontend wiring
 
 1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ roles, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`. `GET /v1/me` is the equivalent for any identity.
 2. **Routes declare scopes.** A frontend route declares `auth: { scope }` exactly as a backend route does. Until a route carries its own declaration, a blanket guard refuses every non-GET request from a session that holds no write scope. The framework enforces the same rule once the declaration arrives, so the guard shrinks as routes gain them.
 3. **Templates render on scope presence.** A write control appears because the session holds a write scope, not because the user is an operator. No template knows what a regulator is. The test for an author: if this were a different role with the same permissions, would the markup change? If not, use the scope.
-4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role the application selected under decision 5.
+4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role the frontend selected under decision 5.
 
 ### 8. What each layer owns
 
@@ -159,15 +161,15 @@ The backend owns the decision and is the only gate. The frontend owns the shape 
 
 The frontend's guards are defence in depth and may assume nothing. A write that gets past them is still refused. This restates the position ADR 0033 already took: "Frontend hiding is UX, not security. The backend scope checks remain the actual gate."
 
-### 9. The forwarded token carries the role claim
+### 9. The forwarded token carries the app roles
 
-The backend can only resolve a regulator if the token it receives carries the role. The Entra `roles` claim arrives on the access token — the application requests `api://{clientId}/.default` specifically so that it does — and not on the ID token.
+The backend can only resolve a regulator if the token it receives carries the app role. Entra puts an identity's app roles in the token's `roles` claim, and puts them on the access token — the application requests `api://{clientId}/.default` specifically so that it does — and not on the ID token.
 
 An Entra session therefore presents its access token to the backend. A Defra ID session presents its ID token.
 
 ### 10. A scope changes without a migration
 
-The backend derives a credential's scopes on every request, from the token's `roles` claim and the email lists. It never reads them from the token, and does not store them.
+The backend derives a credential's scopes on every request, from the token's app roles and the email lists. It never reads a scope from the token, and does not store one.
 
 The instance that derives the set is the instance that then checks it against the route. Two properties follow, and they are what make the vocabulary cheap to change.
 
