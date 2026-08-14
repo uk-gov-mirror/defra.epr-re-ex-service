@@ -98,7 +98,7 @@ This closes a class of defect rather than an instance. Where the absence of a sc
 ### 7. Frontend wiring
 
 1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ role, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`. `GET /v1/me` is the equivalent for any identity.
-2. **Routes declare scopes.** A frontend route declares `auth: { scope }` exactly as a backend route does. Most `epr-frontend` routes declare none today, which is why a blanket guard is needed instead (see the interim position below).
+2. **Routes declare scopes.** A frontend route declares `auth: { scope }` exactly as a backend route does. Until a route carries its own declaration, a blanket guard refuses every non-GET request from a session that holds no write scope. The framework enforces the same rule once the declaration arrives, so the guard shrinks as routes gain them.
 3. **Templates render on scope presence.** A write control appears because the session holds a write scope, not because the user is an operator. No template knows what a regulator is. The test for an author: if this were a different role with the same permissions, would the markup change? If not, use the scope.
 4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role.
 
@@ -113,12 +113,6 @@ The frontend's guards are defence in depth and may assume nothing. A write that 
 The backend can only resolve a regulator if the token it receives carries the role. The Entra `roles` claim arrives on the access token — the application requests `api://{clientId}/.default` specifically so that it does — and not on the ID token.
 
 An Entra session therefore presents its access token to the backend. A Defra ID session presents its ID token.
-
-## Interim position, August 2026
-
-Regulator sign-in is behind the `FEATURE_FLAG_REGULATOR_ACCESS` flag: enabled in `dev`, `test`, `ext-test` and `perf-test`, disabled in `prod`. A penetration test on 18 August probes the separation of the two providers in `ext-test`.
-
-The decisions above are built. One thing is still interim. `epr-frontend` routes do not yet declare scopes, so a blanket write guard — a refusal of every non-GET request from a session holding no write scope — stands in for the declarations at 7.2. As routes gain them the framework enforces the same rule, and the guard shrinks to nothing.
 
 ## Consequences
 
