@@ -8,7 +8,7 @@ Proposed
 
 Extends [ADR 0016 (Admin UI Authorisation MVP)](0016-admin-ui-authorisation-mvp.md) and [ADR 0033 (Admin UI scope-based RBAC)](0033-admin-ui-scope-based-rbac.md) from the admin frontend to the operator frontend.
 
-Supersedes the statement in [the high-level design](../defined/pepr-hld.md#how-do-users-access-this-service) that regulators access the service through the admin frontend, and the corresponding statement in [the API low-level design](../defined/pepr-lld-auth-api.md) that `epr-re-ex-admin-frontend` is the application used by regulators.
+Supersedes the statement in [the high-level design](../defined/pepr-hld.md#how-do-users-access-this-service) that regulators access the service through the admin frontend, the corresponding statement in [the API low-level design](../defined/pepr-lld-auth-api.md) that `epr-re-ex-admin-frontend` is the application used by regulators, and the listing of regulators as an admin frontend user group in [the admin frontend low-level design](../defined/pepr-lld-auth-admin-ui.md).
 
 ## Context
 
@@ -81,7 +81,9 @@ The operator path is unchanged by this ADR. The organisation-link check, the lin
 
 `organisation.read` and `organisation.linked.write` name what the holder acts on. `admin.read`, `admin.write` and `regulator` name the holder instead. The difference decides whether a second population can be given the same permission.
 
-Both role-named scopes have reached that point. A regulator needs most of what `admin.read` covers — the organisation list, the summary-log list and file, the market reports, the data extracts — and must be refused the rest of it, because system logs, form submissions and linked organisations carry personal data (PAE-1077). One flat scope cannot express that. Meanwhile `regulator` gates nothing: no route requires it, and every regulator read reaches its route through `organisation.read`.
+Both role-named scopes have reached that point. A regulator needs most of what `admin.read` covers — the organisation list, the summary-log list and file, the market reports, the data extracts — and must be refused the rest of it. The rest is the service's own operating record. System logs, form submissions, linked organisations and the dead-letter queue describe the service running, not the operator it holds records for. A regulator supervises the operator, so that half is not theirs to read. One flat scope cannot express the split.
+
+Meanwhile `regulator` gates nothing a scope should gate. The one question it answers is where a regulator lands after sign-in, and that is an identity question, answered from the role under decision 7.4. Every regulator read reaches its route through `organisation.read`. So `regulator` carries no permission, and goes.
 
 So the service has one scope vocabulary, drawn on entities and operations, and every role is a bundle over it.
 
@@ -108,11 +110,13 @@ The read vocabulary:
 | `data-extract.read`     | the waste-record, summary-log and market-insight extracts                                                                                 |
 | `service-data.read`     | system logs, form submissions, linked organisations, the dead-letter queue                                                                |
 
-`organisation.read` and its linked and write siblings exist today. This ADR names the other five. `admin.read` is their union, so it stops existing when they land, and `regulator` stops existing with it.
+`organisation.read` and its linked and write siblings exist today. This ADR names the other five. `admin.read` is the union of those five and `organisation.read`, so it stops existing when they land, and `regulator` stops existing with it.
 
 Writes keep their present shape. No regulator-initiated write exists: a service administrator performs each regulator decision, for registration and accreditation status transitions (PAE-1598) and for PRN cancellation (PAE-1807). This ADR names no regulator write scope, because a scope named before its capability invents a requirement.
 
-Every role is a bundle. No role loses access it holds today: the four read scopes that replace `admin.read` are granted together to every tier that holds `admin.read` now, and the regulator bundle is the subset that carries no personal data.
+Every role is a bundle. No role loses access it holds today: the five read scopes that replace `admin.read` are granted together to every tier that holds `admin.read` now. The regulator bundle is the subset that reads the operator record, and not the service's operating record.
+
+A regulator reads the operator's contact details, because they sit on the organisation record `organisation.read` returns.
 
 | Role                     | Scopes                                                                                                             |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
@@ -122,26 +126,32 @@ Every role is a bundle. No role loses access it holds today: the four read scope
 | service_maintainer       | the support bundle and `admin.dlq.purge`                                                                           |
 | service_maintainer_write | the maintainer bundle and `admin.write`                                                                            |
 
-A route declares a scope from the vocabulary. It never names a bundle. A regulator persona that arrives later — the caseworker, the analyst, the field auditor that PAE-1728 must still decide between — is a new row in this table, and changes no route.
+A route declares a scope from the vocabulary. It never names a bundle. A regulator persona that arrives later — the caseworker, the analyst, the field auditor that PAE-1728 must still decide between — is a new row in this table and an entry in the list decision 5 gives each frontend. It changes no route.
 
-### 5. An identity matching more than one rule receives the union
+### 5. An identity matching more than one rule receives the union, and keeps every role it matched
 
 An Entra identity holding a regulator application role and also sitting on a service-maintainer email list receives both bundles. There is no ordering and no short-circuit.
 
 The alternative — first match wins — makes an Entra role assignment silently destructive. Granting a service maintainer a regulator role would remove their admin access, with no change in any repository, no deployment, and no signal but a `403`.
 
+A session therefore carries `roles`, a set. No single label serves both frontends, because the same identity is a regulator in `epr-frontend` and a service maintainer in the admin frontend.
+
+**Each frontend chooses its shell from the roles it serves.** An application holds an ordered list of the roles it renders, and takes the first one the session holds. Neither application ranks a role it does not render, so the two lists never have to agree.
+
 ### 6. A session carries a positive identity
 
-An identity that resolves to no role gets `{ role: null, scopes: [] }`, and the frontend renders the not-authorised page. It does not mint a session usable on operator routes.
+An identity that resolves to no role gets `{ roles: [], scopes: [] }`, and the frontend renders the not-authorised page. It does not mint a session usable on operator routes.
 
-This closes a class of defect rather than an instance. Where the absence of a scope is a tolerated state, a guard written against a specific scope does not fire, and the session falls through to whatever the default is. Every session is an operator, a regulator or a maintainer, decided at sign-in.
+An identity that resolves to roles, but to none the application serves, is refused the same way. An application refuses on the same list it chooses its shell from, so every session it admits has a shell to render.
+
+This closes a class of defect rather than an instance. Where the absence of a scope is a tolerated state, a guard written against a specific scope does not fire, and the session falls through to whatever the default is. Every session an application admits belongs to a population that application serves, decided at sign-in.
 
 ### 7. Frontend wiring
 
-1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ role, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`. `GET /v1/me` is the equivalent for any identity.
+1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ roles, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`. `GET /v1/me` is the equivalent for any identity.
 2. **Routes declare scopes.** A frontend route declares `auth: { scope }` exactly as a backend route does. Until a route carries its own declaration, a blanket guard refuses every non-GET request from a session that holds no write scope. The framework enforces the same rule once the declaration arrives, so the guard shrinks as routes gain them.
 3. **Templates render on scope presence.** A write control appears because the session holds a write scope, not because the user is an operator. No template knows what a regulator is. The test for an author: if this were a different role with the same permissions, would the markup change? If not, use the scope.
-4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role.
+4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role the application selected under decision 5.
 
 ### 8. What each layer owns
 
@@ -176,14 +186,16 @@ A session's copy therefore lags a bundle change by the token refresh cadence. Th
 - One frontend serves both populations over the same entities, and reaches regulators in all four nations.
 - A read route admits a regulator without its author doing anything, so the frontend and backend cannot drift over which routes a regulator may read.
 - Regulators are refused writes by absence rather than by a list. Nothing enumerates what a regulator may not do, so nothing can be forgotten from that enumeration.
-- Adding a regulator role later is a security-group assignment and a map entry. No route or template changes.
+- Adding a regulator role later is a security-group assignment, a map entry, and a list entry in the frontend that renders it. No route or template changes.
 - Both frontends resolve permissions the same way, so a reader learns one pattern.
-- A regulator reads the summary-log file, the organisation list and the data extracts without reading the personal data that sits beside them in `admin.read` today.
+- A regulator reads the summary-log file, the organisation list and the data extracts without reading the service's own operating record, which `admin.read` grants alongside them today.
+- An identity holding two roles gets the shell each frontend renders for it, and never a page it cannot open.
 - Market data can be granted on its own, so a reader who needs the published aggregates never receives an operator record.
 
 ### Costs
 
 - A new backend endpoint, and a round trip at sign-in and on each refresh.
+- Each frontend holds the ordered list of the roles it renders, so a new persona reaches the shell only once that list names it.
 - Every route that carries `admin.read` is re-declared against the scope its data belongs to. The change is mechanical, and it touches the routes the admin frontend and the regulator frontend share.
 - `summary-log.file.read` is a strict escalation of `organisation.read`: a holder of the file scope can already read the parsed data. It earns a separate scope only where a reader gets the data and not the artefact.
 - A frontend's cached scope set can only be refreshed by asking the backend, so nothing on the session can detect that it has gone stale.
