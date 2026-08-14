@@ -155,6 +155,20 @@ The backend can only resolve a regulator if the token it receives carries the ro
 
 An Entra session therefore presents its access token to the backend. A Defra ID session presents its ID token.
 
+### 10. A scope changes without a migration
+
+The backend derives a credential's scopes on every request, from the token's `roles` claim and the email lists. It never reads them from the token, and does not store them.
+
+The instance that derives the set is the instance that then checks it against the route. Two properties follow, and they are what make the vocabulary cheap to change.
+
+**A rename ships in one deployment.** During a rolling deployment every instance grants and demands the same strings, because both come from the same artefact. An old instance grants `admin.read` and its routes ask for `admin.read`. A new instance grants the new name and its routes ask for the new name. No request meets a route that demands a string the resolver did not grant. A rename therefore needs no expand-and-contract sequence.
+
+**A change to a role's bundle takes effect on the next request.** Nothing is cached that must expire first. A scope added to a bundle, or removed from one, reaches every signed-in user as soon as the deployment completes.
+
+A frontend holds a copy of the derived set, not the decision. Between a backend deployment and a frontend deployment, a template can test for a string the session does not carry. The page renders the wrong affordance. The backend still refuses the write, so the skew costs a confusing page and never a permission.
+
+A session's copy therefore lags a bundle change by the token refresh cadence. This ADR sets no shorter cadence: a shorter one costs a round trip per navigation, and buys a faster correction to an affordance the backend was already gating.
+
 ## Consequences
 
 ### Enabled
@@ -173,6 +187,7 @@ An Entra session therefore presents its access token to the backend. A Defra ID 
 - The regulator grant is invisible at the route. A reader of a route declaration cannot tell that regulators reach it; only the resolver says so. This is the price of the drift being unrepresentable, and it needs a comment where the resolver grants it.
 - Every route that carries `admin.read` is re-declared against the scope its data belongs to. The change is mechanical, and it touches the routes the admin frontend and the regulator frontend share.
 - `summary-log.file.read` is a strict escalation of `organisation.read`: a holder of the file scope can already read the parsed data. It earns a separate scope only where a reader gets the data and not the artefact.
+- A frontend's cached scope set can only be refreshed by asking the backend, so nothing on the session can detect that it has gone stale.
 
 ### Not solved
 
