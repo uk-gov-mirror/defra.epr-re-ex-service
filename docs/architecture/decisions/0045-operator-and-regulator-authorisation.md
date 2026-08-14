@@ -24,15 +24,15 @@ More importantly, operators and regulators read the same entities. An organisati
 
 ### Why this ADR exists
 
-The PoC that established regulator sign-in (PAE-1771) closed with an explicit request: "need a decision (documented via an ADR) about where in the stack to perform 'is the user a regulator' checks (based on the role)". That decision was never written, and two changes have since answered it independently and differently — one placing the check in the frontend, one in the backend. Both are defensible. Neither is recorded, so the next person to add a route or a template has nothing to read that tells them which layer owns the rule.
+The PoC that established regulator sign-in (PAE-1771) closed with an explicit request: "need a decision (documented via an ADR) about where in the stack to perform 'is the user a regulator' checks (based on the role)". That decision was never written, and two changes answered it independently and differently — one put the check in the frontend, one in the backend. Both were defensible. Neither was recorded, so the next person to add a route or a template had nothing to read that named the layer that owned the rule.
 
 ### The vocabulary this builds on
 
 A **role** says who a user is. **Scopes** say what they may do. A role is a named bundle of scopes, and a route declares the scopes it needs, never a role. This separation was established in the admin frontend by ADR 0033, and applied to the backend auth layer by the clean-up under PAE-1556 and PAE-1661, which removed the conflation of the two and named the operator-side permissions for what they are.
 
-### What is inconsistent today
+### What was inconsistent
 
-The two frontends resolve permissions by different means. The admin frontend asks the backend once at sign-in, through `GET /v1/admin/me`, and stores the answer on the session — the pattern ADR 0016 named as its target and ADR 0033 adopted. `epr-frontend` instead reads the Entra `roles` claim itself, inside its Bell profile function, and mints its own session scope. The mapping from identity to permission therefore lives in two codebases, and they have already drifted: there are operator read routes the frontend renders for a regulator that the backend still refuses.
+The two frontends resolved permissions by different means. The admin frontend asked the backend once at sign-in, through `GET /v1/admin/me`, and stored the answer on the session — the pattern ADR 0016 named as its target and ADR 0033 adopted. `epr-frontend` instead read the Entra `roles` claim itself, inside its Bell profile function, and minted its own session scope. The mapping from identity to permission therefore lived in two codebases, and they drifted: the frontend rendered operator read routes for a regulator that the backend refused.
 
 ## Decision
 
@@ -97,7 +97,7 @@ This closes a class of defect rather than an instance. Where the absence of a sc
 
 ### 7. Frontend wiring
 
-1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ role, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`; the operator frontend needs the equivalent for any identity.
+1. **Fetch at sign-in and on refresh.** `epr-frontend` calls the backend for `{ role, scopes }` when a session is established, and again when tokens refresh, and stores the result on the server-side session. The staleness window is the token refresh cadence, not the session lifetime. The admin frontend already does this through `GET /v1/admin/me`. `GET /v1/me` is the equivalent for any identity.
 2. **Routes declare scopes.** A frontend route declares `auth: { scope }` exactly as a backend route does. Most `epr-frontend` routes declare none today, which is why a blanket guard is needed instead (see the interim position below).
 3. **Templates render on scope presence.** A write control appears because the session holds a write scope, not because the user is an operator. No template knows what a regulator is. The test for an author: if this were a different role with the same permissions, would the markup change? If not, use the scope.
 4. **Redirects choose on role.** Where a user lands after sign-in, which navigation shell renders, what the header calls the service — these are questions about identity, not permission, and cannot be derived from a scope set. They use the role.
@@ -108,26 +108,17 @@ The backend owns the decision and is the only gate. The frontend owns the shape 
 
 The frontend's guards are defence in depth and may assume nothing. A write that gets past them is still refused. This restates the position ADR 0033 already took: "Frontend hiding is UX, not security. The backend scope checks remain the actual gate."
 
-### 9. The forwarded token must carry the role claim
+### 9. The forwarded token carries the role claim
 
-The backend can only resolve a regulator if the token it receives carries the role. `epr-frontend` currently forwards the ID token on every backend call, while the Entra role arrives on the access token — the application requests `api://{clientId}/.default` specifically so that it does.
+The backend can only resolve a regulator if the token it receives carries the role. The Entra `roles` claim arrives on the access token — the application requests `api://{clientId}/.default` specifically so that it does — and not on the ID token.
 
-This ADR does not choose between forwarding the access token and configuring Entra to place the role claim on the ID token. It records that the forwarded token must carry the role, and that this is not true today.
+An Entra session therefore presents its access token to the backend. A Defra ID session presents its ID token.
 
 ## Interim position, August 2026
 
 Regulator sign-in is behind the `FEATURE_FLAG_REGULATOR_ACCESS` flag: enabled in `dev`, `test`, `ext-test` and `perf-test`, disabled in `prod`. A penetration test on 18 August probes the separation of the two providers in `ext-test`.
 
-The deployed code diverges from the model above in four places. Each is scheduled, not accepted.
-
-| Divergence           | Deployed behaviour                                                    | Target                                               |
-| -------------------- | --------------------------------------------------------------------- | ---------------------------------------------------- |
-| Regulator read grant | A dedicated regulator read scope, admitted on a named list of routes  | The grant moves into the resolver; no route names it |
-| Precedence           | First match wins; the application role short-circuits the email lists | Union                                                |
-| Frontend affordances | Templates and the write guard test whether the session is a regulator | Both test for scope presence                         |
-| Forwarded token      | The ID token, which does not carry the role claim                     | A token that carries the role claim                  |
-
-The frontend's blanket write guard — a refusal of every non-GET request from a regulator session — is transitional. It exists because `epr-frontend` routes do not yet declare scopes. As they gain declarations the framework enforces the same rule, and the guard shrinks to nothing.
+The decisions above are built. One thing is still interim. `epr-frontend` routes do not yet declare scopes, so a blanket write guard — a refusal of every non-GET request from a session holding no write scope — stands in for the declarations at 7.2. As routes gain them the framework enforces the same rule, and the guard shrinks to nothing.
 
 ## Consequences
 
@@ -143,7 +134,6 @@ The frontend's blanket write guard — a refusal of every non-GET request from a
 
 - A new backend endpoint, and a round trip at sign-in and on each refresh.
 - The regulator grant is invisible at the route. A reader of a route declaration cannot tell that regulators reach it; only the resolver says so. This is the price of the drift being unrepresentable, and it needs a comment where the resolver grants it.
-- The four divergences above have to be closed, and the work is not sequenced by this ADR.
 
 ### Not solved
 
