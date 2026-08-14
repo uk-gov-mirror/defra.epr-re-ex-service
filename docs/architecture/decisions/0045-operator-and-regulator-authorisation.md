@@ -190,8 +190,9 @@ A session's copy therefore lags a bundle change by the token refresh cadence. Th
 
 ### Not solved
 
-- **Jurisdiction.** A regulator sees every organisation, not only those their authority regulates. Narrowing would be a grant condition on `organisation.read`, the same shape as the operator's link check, but it is not designed here.
+- **Jurisdiction.** A regulator sees every organisation, not only those their authority regulates. Narrowing `organisation.read` is a grant condition, the same shape as the operator's link check. Narrowing `organisation.search`, `data-extract.read` and `market-data.read` is not, because a condition on the request cannot filter a result set or a file, and those are the scopes where jurisdiction matters most. Neither is designed here.
 - **The regulator role taxonomy.** One flat role exists. This ADR describes how a second would be added, and adds none. PAE-1728 must first decide how many regulator personas the service serves.
-- **Regulator writes.** Registration and accreditation status transitions, PRN cancellation, and overseas-site maintenance are the three functions that need a regulator write scope. Each has a different blast radius, so each takes its own scope. None is designed here, because a service administrator performs all three today.
+- **Regulator writes.** Registration and accreditation status transitions, PRN cancellation, and overseas-site maintenance are the functions that will need a regulator write scope. None is designed here, because a service administrator performs all three today.
+- **Machine credentials.** The vocabulary describes three human populations. Two machine credentials sit outside it: the basic-auth credential carries `organisation.read`, the same scope a regulator holds, and the API gateway credential carries no scope at all, so its routes are authorised by the strategy alone. Whether a machine takes a scope from this vocabulary, or a vocabulary of its own, is not decided here.
 - **Two role strings.** `EPR.Regulator` and `Waste.Regulator.Standard` both exist and mean different things to different consumers. Neither is named canonical here.
 - **Service-maintainer assignment.** Maintainer tiers still come from email lists in configuration rather than from Entra groups. ADR 0033 named group-based assignment as a future concern and it remains one.
