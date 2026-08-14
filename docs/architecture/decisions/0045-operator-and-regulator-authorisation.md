@@ -184,7 +184,6 @@ A session's copy therefore lags a bundle change by the token refresh cadence. Th
 ### Costs
 
 - A new backend endpoint, and a round trip at sign-in and on each refresh.
-- The regulator grant is invisible at the route. A reader of a route declaration cannot tell that regulators reach it; only the resolver says so. This is the price of the drift being unrepresentable, and it needs a comment where the resolver grants it.
 - Every route that carries `admin.read` is re-declared against the scope its data belongs to. The change is mechanical, and it touches the routes the admin frontend and the regulator frontend share.
 - `summary-log.file.read` is a strict escalation of `organisation.read`: a holder of the file scope can already read the parsed data. It earns a separate scope only where a reader gets the data and not the artefact.
 - A frontend's cached scope set can only be refreshed by asking the backend, so nothing on the session can detect that it has gone stale.
