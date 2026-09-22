@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "description": "pEPR Re/Ex project",
   "engines": {
-    "node": "^24.20.0"
+    "node": "^24.21.0"
   },
   "scripts": {
     "dev": "GOVUK_NOTIFY_API_KEY=test-api-key-12345 docker compose --profile all up --watch",
